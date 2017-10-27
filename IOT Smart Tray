@@ -1,0 +1,367 @@
+//working
+/*
+ *  This sketch sends data via HTTP GET requests to data.sparkfun.com service.
+ *
+ *  You need to get streamId and privateKey at data.sparkfun.com and paste them
+ *  below. Or just customize this script to talk to other HTTP servers.
+ *
+ */
+#include <TimeLib.h>
+#include <WiFiUdp.h>
+#include <String.h>
+#include <Time.h>
+#include <NTPClient.h>
+#include <Timezone.h>
+
+
+//#include <ESP8266WiFi.h>
+#include <SPI.h>
+#include <Ethernet.h>
+#include <WiFi.h>
+#include <Q2HX711.h>
+#include <PubSubClient.h>
+//#include <SoftwareSerial.h>
+//////////////////////////////////////////////////////////
+//MODIFYING THESE VALUSE FROM THE PubSubClient.h - Start//
+//////////////////////////////////////////////////////////
+#undef MQTT_MAX_PACKET_SIZE
+#ifndef MQTT_MAX_PACKET_SIZE
+#define MQTT_MAX_PACKET_SIZE 400
+#endif
+#if (MQTT_MAX_PACKET_SIZE < 400)
+#error "MQTT_MAX_PACKET_SIZE is less than 400. Edit PubSubClient.h"
+#endif
+
+#undef MQTT_SOCKET_TIMEOUT
+#define MQTT_SOCKET_TIMEOUT 120
+#if (MQTT_SOCKET_TIMEOUT < 120)
+#error "MQTT_SOCKET_TIMEOUT is less than 120. Edit PubSubClient.h"
+#endif
+////////////////////////////////////////////////////////
+//MODIFYING THESE VALUSE FROM THE PubSubClient.h - End//
+////////////////////////////////////////////////////////
+WiFiUDP ntpUDP;
+
+// By default 'time.nist.gov' is used with 60 seconds update interval and
+// no offset
+NTPClient timeClient(ntpUDP, "ae.pool.ntp.org", 18000, 60000);
+String date;
+String t;
+//const char * days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"} ;
+//const char * months[] = {"Jan", "Feb", "Mar", "Apr", "May", "June", "July", "Aug", "Sep", "Oct", "Nov", "Dec"} ;
+//const char * ampm[] = {"AM", "PM"} ;
+float zeroCaliberation = 0;
+
+//////////////////////////////////////////////////////////////////////////
+//SET THESE PARAMETERS TO CONTROL THE BEHAVIOR OF THE IOT DEVICE - Start//
+//////////////////////////////////////////////////////////////////////////
+#define DELAY 2000
+#define BAUD_RATE 9600
+//#define PIN_TEMP A0
+//#define PIN_TRIGGER A0
+//#define PIN_HUMIDITY A0
+//#define PIN_DOOR_STATE A0
+//#define TRAYS 1
+#define RELAY_TO_RETAILYTICS true
+#define RELAY_TO_IBMIOT true
+
+const byte Q2HX711_data_pin = 5;//5=D1
+const byte Q2HX711_clock_pin = 4;//4=D2
+Q2HX711 t1(Q2HX711_data_pin, Q2HX711_clock_pin);
+
+
+const char DEVICE_ID[]="D0008";
+const char* ssid     = "your ssid";//"VFIO";
+const char* pass     = "your password";//"mnkz2017";
+float lastWeight = 0;
+
+//OUR CODE
+//Retailytics Info = Ends here
+
+// set this to the number of milliseconds delay
+// this is nx1000 seconds
+#define delayMillis 3000UL
+
+#define heartBeat 300
+
+unsigned long lastSentOn = 0;
+unsigned long lastMillis = 0;
+//Retailytics Info = Ends here
+
+
+// IBM Bluemix Info - Starts here
+char orgName[] = "";      // Your org name, found under the "Credentials" area in your Bluemix dashboard.
+char macstr[] = ""; // The MAC address of your Arduino gadget, update this to match your own.
+char server[] = ""; // MQTT Host (taken from Bluemix dashboard)
+char type[] = "";    // Type of device you have registered in the IBM Bluemix Devices area.
+char token[] = ""; // Token issued when you first register your IoT device (only appears once)
+int port = ;/// port number
+////////////////////////////////////////////////////////////////////////
+//SET THESE PARAMETERS TO CONTROL THE BEHAVIOR OF THE IOT DEVICE - End//
+////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////
+//Forward Declarations - Start//
+////////////////////////////////
+  //------------//
+  //Libs - Start//
+  //------------//
+    String buildClientName();
+  //----------//
+  //Libs - End//
+  //----------//
+
+  //-------------//
+  //Setup - Start//
+  //-------------//
+    void setupWifi();
+
+  //-----------//
+  //Setup - End//
+  //-----------//
+  
+  //-------------//
+  //Loops - Start//
+  //-------------//
+    void postDataToIBMIOTServer(String json);
+    void postDataToRetailytics(String json);
+  //-----------//
+  //Loops - End//
+  //-----------//
+
+//////////////////////////////
+//Forward Declarations - End//
+//////////////////////////////
+
+//Globals - Start
+String clientName = buildClientName();
+String topicName = String("iot-2/evt/status/fmt/json"); // Topic
+int value = 0;
+
+// WiFi connection
+WiFiClient wifiClient;
+
+
+int status = WL_IDLE_STATUS;          // the Wifi radio's status
+
+// PubSub Client.
+PubSubClient client(server, port, 0 , wifiClient);
+//Globals - End
+
+
+void setup() {
+  date = "";
+  timeClient.begin();
+  Serial.begin(BAUD_RATE);
+  
+  delay(100);
+
+  setupWifi();  
+  
+  delay(500);
+  
+  zeroCaliberation=t1.read();
+}
+
+//THIS FUNCTION IS CALLED FREQUENTLY IN THE LOOP FOR NOW (WILL MAKE IT EVENT DRIVEN LATER)
+void loop() {
+    //Extract Readings
+      float reading = (t1.read()-zeroCaliberation)/1000;
+      Serial.print("reading = ");
+      Serial.println(reading);
+      
+      
+       date = "";  // clear the variables
+       t = "";
+       timeClient.update();
+       unsigned long epochTime =  timeClient.getEpochTime();
+       Serial.println(epochTime);
+       // convert received time stamp to time_t object
+       time_t local, utc;
+       utc = epochTime;
+    
+        // Then convert the UTC UNIX timestamp to local time
+       TimeChangeRule usEDT = {"EDT", Second, Sun, Mar, 2, -300};  //UTC - 5 hours - change this as needed
+       TimeChangeRule usEST = {"EST", First, Sun, Nov, 2, -360};   //UTC - 6 hours - change this as needed
+       Timezone usEastern(usEDT, usEST);
+       local = usEastern.toLocal(utc);
+    
+      // now format the Time variables into strings with proper names for month, day etc
+      date = String(year(local)) + "-" + String(month(local)<10?"0":"") + String(month(local)) + "-" + String(day(local)<10?"0":"")+String(day(local)) + "T" + String(timeClient.getFormattedTime());
+      
+      Serial.print("Local date: ");
+      Serial.println(date);
+
+      
+    // Build the JSON data to publish.            
+      String json = buildJson("TRAY 2" , date, String(reading), "WEIGHT");//, String(temparature), String(trigger), String(humidity), String(doorState));
+      char jsonStr[MQTT_MAX_PACKET_SIZE];
+      json.toCharArray(jsonStr,MQTT_MAX_PACKET_SIZE);
+      if(lastWeight!=reading || epochTime - lastSentOn >  heartBeat){//send only variations in the values to the retailytics server or if heartbead is needed.
+          lastSentOn = epochTime;
+          lastWeight = reading;
+          //Post Data to IBM IOT Server    
+            if(RELAY_TO_IBMIOT)
+              postDataToIBMIOTServer(jsonStr);
+          
+          //Post Data to Retailytics
+            if(RELAY_TO_RETAILYTICS)
+                postDataToRetailytics(jsonStr);              
+      }
+ 
+  delay(DELAY);  
+}
+///////////////////////////
+//SETUP FUNCTIONS - START//
+///////////////////////////
+void setupWifi(){
+  status = WiFi.begin(ssid, pass);
+  if(status == WL_CONNECTED){
+    Serial.println("WiFi Connected!");
+  } else {
+    Serial.println("WiFi Failed!");
+  }
+}
+/////////////////////////
+//SETUP FUNCTIONS - END//
+/////////////////////////
+
+
+void postDataToRetailytics(char* json){
+  char serverName[] = "";
+  int serverPort = ;
+  char pageName[] = "";
+
+ 
+  unsigned long thisMillis = millis();
+
+  if(thisMillis - lastMillis > delayMillis)
+  {
+    lastMillis = thisMillis;
+
+    // params must be url encoded.
+    //sprintf(params,"temp1=%i",totalCount);     
+    if(!postPage(serverName,serverPort,pageName,json)) Serial.print(F("Fail "));
+    else Serial.print(F("Pass "));
+    //totalCount++;
+    delay(500);
+    //Serial.println(totalCount,DEC);
+  }   
+  //Post Date to Retailytics - End
+}
+void postDataToIBMIOTServer(char* json){
+  //IBM IOT Code - Start
+  char clientStr[34];
+  clientName.toCharArray(clientStr,34);
+  char topicStr[50];
+  topicName.toCharArray(topicStr,26);
+  
+  if (!client.connected()) {
+    Serial.print("Trying to connect to: ");
+    Serial.println(clientStr);
+    client.connect(clientStr, "use-token-auth", token);
+  }
+  if(client.connected()) {
+       Serial.println("Success getting online...Begin transmit...");
+       
+      // Publish the data.
+      boolean pubresult = client.publish(topicStr,json);
+      Serial.print("attempt to send ");
+      Serial.println(json);
+      Serial.print("to ");
+      Serial.println(topicStr);
+      delay(50);
+      if (pubresult)
+        Serial.println("successfully sent");
+      else
+        Serial.println("unsuccessfully sent");
+  }
+  //IBM IOT Code - End  
+}
+// Builds the clientName
+String buildClientName (){
+  String data = "";
+  data+="d:";
+  data+=orgName;
+  data+=":";
+  data+=type;
+  data+=":";
+  data+=macstr;
+  return data;
+}
+
+String buildJson(String sensorID, String timeStamp, String deviceStatus, String deviceType){//, String temparature, String trigger, String humidity, String doorState) {
+  String temparature = "4";
+  String data = "{";
+  data+= "\"d\": {";
+  data+="\"DEVICEID\": \""+String(DEVICE_ID)+"\","; 
+  data+="\"SENSORID\": \""+sensorID+"\","; 
+  data+="\"TIMESTAMP\": \""+timeStamp+"\",";
+  data+="\"READING\": \""+deviceStatus+"\","; 
+  data+="\"TEMPARATURE\": \""+temparature+"\","; 
+  //data+="\"HUMIDITY\": \""+humidity+"\","; 
+  //data+="\"TRIGGER\": \""+trigger+"\","; 
+  //data+="\"DOORSTATE\": \""+trigger+"\","; 
+  data+="\"DEVICETYPE\": \""+deviceType+"\""; 
+  data+="}";
+  data+="}";
+  return data;
+}
+
+//http://playground.arduino.cc/Code/WebClient
+//to post date to the retailytics service
+byte postPage(char* domainBuffer,int thisPort,char* page,char* thisData)
+{
+  int inChar;
+  char outBuf[64];
+
+  Serial.print(F("connecting..."));
+
+  if(wifiClient.connect(domainBuffer,thisPort) == 1)
+  {
+    Serial.println(F("connected"));
+
+    // send the header
+    sprintf(outBuf,"POST %s HTTP/1.1",page);
+    wifiClient.println(outBuf);
+    sprintf(outBuf,"Host: %s",domainBuffer);
+    wifiClient.println(outBuf);
+    wifiClient.println(F("Connection: close\r\nContent-Type: application/x-www-form-urlencoded"));
+    sprintf(outBuf,"Content-Length: %u\r\n",strlen(thisData));
+    wifiClient.println(outBuf);
+
+    // send the body (variables)
+    wifiClient.print(thisData);
+  } 
+  else
+  {
+    Serial.println(F("failed"));
+    return 0;
+  }
+
+  int connectLoop = 0;
+
+  while(wifiClient.connected())
+  {
+    while(wifiClient.available())
+    {
+      inChar = wifiClient.read();
+      Serial.write(inChar);
+      connectLoop = 0;
+    }
+
+    delay(10);
+    connectLoop++;
+    if(connectLoop > 10000)
+    {
+      Serial.println();
+      Serial.println(F("Timeout"));
+      wifiClient.stop();
+    }
+  }
+
+  Serial.println();
+  Serial.println(F("disconnecting."));
+  wifiClient.stop();
+  return 1;
+}
